@@ -166,6 +166,9 @@ MtCheckNamedObjectInMethod (
     ACPI_PARSE_OBJECT       *Op,
     ASL_METHOD_INFO         *MethodInfo);
 
+static void
+MtCheckStaticOperationRegionInMethod (
+    ACPI_PARSE_OBJECT       *Op);
 
 /*******************************************************************************
  *
@@ -560,6 +563,9 @@ MtMethodAnalysisWalkBegin (
             AslError (ASL_ERROR, ASL_MSG_RESERVED_USE,
                 Op, Op->Asl.ExternalName);
         }
+
+		MtCheckStaticOperationRegionInMethod(Op);
+
         break;
 
     case PARSEOP_NAME:
@@ -609,6 +615,61 @@ MtMethodAnalysisWalkBegin (
 
     MtCheckNamedObjectInMethod (Op, MethodInfo);
     return (AE_OK);
+}
+
+
+/******************************************************************************
+ *
+ * FUNCTION:    MtCheckStaticOperationRegionInMethod
+ *
+ * PARAMETERS:  Op                  - Current parser op
+ *
+ * RETURN:      None
+ *
+ * DESCRIPTION: Warns if an Operation Region with static address and length
+ *              is declared inside a control method
+ *
+ ******************************************************************************/
+
+static void
+MtCheckStaticOperationRegionInMethod (
+    ACPI_PARSE_OBJECT*       Op)
+{
+    ACPI_PARSE_OBJECT        *AddressOp;
+    ACPI_PARSE_OBJECT        *LengthOp;
+    ACPI_PARSE_OBJECT        *OperationRegionOp;
+
+    if (Op->Asl.ParseOpcode == PARSEOP_OPERATIONREGION)
+    {
+        OperationRegionOp = Op;
+
+        /* OperationRegion should have 4 arguments defined */
+
+        if ((Op->Asl.Child) &&                                            /* Name of OpRegion */
+            (Op->Asl.Child->Asl.Next) &&                                  /* Type of OpRegion */
+            (AddressOp = Op->Asl.Child->Asl.Next->Asl.Next) &&          /* Start Address */
+            (LengthOp = Op->Asl.Child->Asl.Next->Asl.Next->Asl.Next))   /* Length */
+        {
+            /* Check if address and length are declared statically */
+
+            if ((AddressOp->Asl.ParseOpcode == PARSEOP_INTEGER) &&
+                (LengthOp->Asl.ParseOpcode == PARSEOP_INTEGER))
+            {
+                /* Find if OperationRegion is nested inside a control method */
+
+                while (Op = Op->Asl.Parent)
+                {
+                    if (Op->Asl.ParseOpcode == PARSEOP_METHOD)
+                    {
+                        AslError (ASL_WARNING, ASL_MSG_OPREGION_IN_METHOD, OperationRegionOp, NULL);
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    return;
 }
 
 
