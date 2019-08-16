@@ -216,6 +216,25 @@ typedef struct asl_analysis_walk_info
 
 } ASL_ANALYSIS_WALK_INFO;
 
+/* Walk info for _DEP circular dependency calculation */
+
+struct device
+{
+    char                    *Name;
+    struct dependency       *Dependencies;
+    BOOLEAN                 PermanentMark;
+    BOOLEAN                 TemporaryMark;
+    struct device           *Next;
+};
+
+
+struct dependency
+{
+    struct device           *Source;
+    struct device           *Destination;
+    struct dependency       *NextDependency;
+};
+
 
 /* An entry in the ParseOpcode to AmlOpcode mapping table */
 

@@ -372,6 +372,7 @@ typedef enum
     ASL_MSG_INVALID_PROCESSOR_UID,
     ASL_MSG_LEGACY_PROCESSOR_OP,
     ASL_MSG_OPREGION_IN_METHOD,
+    ASL_MSG_DEVICE_CIRCULAR_DEP,
 
     /* These messages are used by the Data Table compiler only */
 

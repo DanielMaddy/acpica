@@ -370,6 +370,7 @@ const char                      *AslCompilerMsgs [] =
 /*    ASL_MSG_INVALID_PROCESSOR_UID */      "_UID inside processor declaration must be an integer",
 /*    ASL_MSG_LEGACY_PROCESSOR_OP */        "Legacy Processor() keyword detected. Use Device() keyword instead.",
 /*    ASL_MSG_OPREGION_IN_METHOD */         "OperationRegion with static parameters should be declared outside control method"
+/*    ASL_MSG_DEVICE_CIRCULAR_DEP */        "_DEP object introduces a circular dependency with this device"
 };
 
 /* Table compiler */
