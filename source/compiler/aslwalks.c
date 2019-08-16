@@ -173,6 +173,24 @@ static void
 AnValidateCreateBufferField (
     ACPI_PARSE_OBJECT       *CreateBufferFieldOp);
 
+static BOOLEAN
+TopologicalSortVisit (
+    struct device           *Device);
+
+static BOOLEAN
+ResetDependencyGraph ();
+
+static BOOLEAN
+TopologicalSort ();
+
+static struct device*
+FindDeviceInDependencyGraph (
+    char                    *Name);
+
+static ACPI_STATUS
+AddDependency (
+    char                    *SourceName,
+    char                    *DestinationName);
 
 /*******************************************************************************
  *
@@ -672,6 +690,10 @@ AnOtherSemanticAnalysisWalkBegin (
     ACPI_PARSE_OBJECT       *PrevArgOp = NULL;
     const ACPI_OPCODE_INFO  *OpInfo;
     ACPI_NAMESPACE_NODE     *Node;
+    ACPI_PARSE_OBJECT       *DependencyOp;
+    ACPI_PARSE_OBJECT       *DependencyDeviceNameOp;
+    ACPI_PARSE_OBJECT       *DeviceOp;
+    ACPI_PARSE_OBJECT       *NameOp;
 
 
     OpInfo = AcpiPsGetOpcodeInfo (Op->Asl.AmlOpcode);
@@ -875,6 +897,57 @@ AnOtherSemanticAnalysisWalkBegin (
 
             ArgOp = ArgOp->Asl.Next;
         }
+        break;
+
+    case PARSEOP_NAME:
+        /*
+         * If this is a _DEP object, ensure there are no circular
+         * dependencies between devices
+         */
+
+        if ((Op->Asl.Child) &&
+            (Op->Asl.Child->Asl.ParseOpcode == PARSEOP_NAMESEG) &&
+            (!strcmp (Op->Asl.NameSeg, "_DEP")))
+        {
+            NameOp = Op;
+
+            /* _DEP object should be a package */
+
+            if ((Op->Asl.Child->Asl.Next) &&
+                (Op->Asl.Child->Asl.Next->Asl.ParseOpcode == PARSEOP_PACKAGE))
+            {
+                DependencyOp = Op->Asl.Child->Asl.Next;
+
+                /* Check package content is declared statically - so it can be analyzed */
+
+                if ((DependencyOp->Asl.Child->Asl.ParseOpcode == PARSEOP_RAW_DATA) &&
+                    (DependencyOp->Asl.Child->Asl.Next->Asl.ParseOpcode == PARSEOP_NAMESEG))
+                {
+                    /* Found name of dependency */
+
+                    DependencyDeviceNameOp = DependencyOp->Asl.Child->Asl.Next;
+
+                    /* Find Parent Device for this dependency */
+
+                    while (Op = Op->Asl.Parent)
+                    {
+                        if (Op->Asl.ParseOpcode == PARSEOP_DEVICE)
+                        {
+                            DeviceOp = Op;
+                            AddDependency (DeviceOp->Asl.NameSeg, DependencyDeviceNameOp->Asl.ExternalName);
+                            if (!TopologicalSort ())
+                            {
+                                AslError (ASL_ERROR, ASL_MSG_DEVICE_CIRCULAR_DEP, NameOp, NULL);
+                            }
+
+                            break;
+                        }
+                    }
+
+                }
+            }
+        }
+
         break;
 
     default:
@@ -1259,4 +1332,278 @@ AnAnalyzeStoreOperator (
                 "Target is [Package], Source must be a package also");
         }
     }
+}
+
+
+/*******************************************************************************
+ *
+ * FUNCTION:    ResetDependencyGraph
+ *
+ * PARAMETERS:
+ *
+ * RETURN:      BOOLEAN
+ *
+ * DESCRIPTION: Resets the PermanentMark in every Device in the Graph to FALSE
+ *              to indicate that no Device was visited
+ *
+ ******************************************************************************/
+
+static BOOLEAN
+ResetDependencyGraph ()
+{
+    struct device            *Device;
+
+    if (!AslGbl_DependencyGraph)
+    {
+        return TRUE;
+    }
+
+    Device = AslGbl_DependencyGraph;
+    while (Device)
+    {
+        Device->PermanentMark = FALSE;
+        Device = Device->Next;
+    }
+
+    return TRUE;
+}
+
+
+/*******************************************************************************
+ *
+ * FUNCTION:    TopologicalSortVisit
+ *
+ * PARAMETERS:  Device                       - Node to check dependencies
+ *
+ * RETURN:      BOOLEAN
+ *
+ * DESCRIPTION: Helper method for TopologicalSort. Visit one node and check for
+ *              circular dependencies in all the dependencies of this node.
+ *              Returns FALSE when a circular dependency is found
+ *
+ ******************************************************************************/
+
+static BOOLEAN
+TopologicalSortVisit (
+    struct device            *Device)
+{
+    struct dependency        *TempDependency;
+
+    /* Node already visited */
+
+    if (Device->PermanentMark)
+    {
+        return TRUE;
+    }
+
+    /* Found a circular dependency */
+
+    if (Device->TemporaryMark)
+    {
+        return FALSE;
+    }
+
+    /* Mark this device as "currently visiting" */
+
+    Device->TemporaryMark = TRUE;
+
+    /*
+     * Loop through Device's dependencies and call helper method
+     * on each. If one of them is currently being visited then
+     * there is a circular dependency
+     */
+
+    TempDependency = Device->Dependencies;
+    while (TempDependency)
+    {
+        if (!TopologicalSortVisit (TempDependency->Destination))
+        {
+            /* Found a circular dependency */
+
+            Device->TemporaryMark = FALSE;
+            return FALSE;
+        }
+
+        TempDependency = TempDependency->NextDependency;
+    }
+
+    /* Mark Device as "not currently visiting" and as "already visited" */
+
+    Device->TemporaryMark = FALSE;
+    Device->PermanentMark = TRUE;
+
+    return TRUE;
+}
+
+
+/*******************************************************************************
+ *
+ * FUNCTION:    TopologicalSort
+ *
+ * PARAMETERS:
+ *
+ * RETURN:      BOOLEAN
+ *
+ * DESCRIPTION: Visits every node in the AslGbl_DependencyGraph to check every
+ *              dependency. Runs in O(n).
+ *              Returns FALSE when circular dependency is found.
+ *
+ ******************************************************************************/
+
+static BOOLEAN
+TopologicalSort ()
+{
+    struct device            *Device;
+
+    if (!AslGbl_DependencyGraph)
+    {
+        return TRUE;
+    }
+
+    Device = AslGbl_DependencyGraph;
+    while (Device)
+    {
+        if (!Device->PermanentMark)
+        {
+            if (!TopologicalSortVisit (Device))
+            {
+                /* Found circular dependency */
+
+                return FALSE;
+            }
+        }
+        Device = Device->Next;
+    }
+
+    /*
+     * Set every node as "not visited" for the next time this method
+     * is called
+     */
+
+    ResetDependencyGraph ();
+
+    return TRUE;
+}
+
+
+/*******************************************************************************
+ *
+ * FUNCTION:    FindDeviceInDependencyGraph
+ *
+ * PARAMETERS:  Name                        - c_str with name of Device to find
+ *
+ * RETURN:      BOOLEAN
+ *
+ * DESCRIPTION: Visits every node in the AslGbl_DependencyGraph to find the
+ *              Device with Name. Returns the device if found, NULL if not
+ *
+ ******************************************************************************/
+static struct device*
+FindDeviceInDependencyGraph (
+        char                 *Name)
+{
+    struct device            *Temp;
+
+    if (!AslGbl_DependencyGraph)
+    {
+        return NULL;
+    }
+
+    Temp = AslGbl_DependencyGraph;
+    while (Temp)
+    {
+        if (!strcmp(Temp->Name, Name))
+        {
+            return Temp;
+        }
+        Temp = Temp->Next;
+    }
+
+    return NULL;
+}
+
+
+/*******************************************************************************
+ *
+ * FUNCTION:    AddDependency
+ *
+ * PARAMETERS:  SourceName         - c_str with name of Device with _DEP object
+ *              DestinationName    - c_str with name of Device where _DEP points
+ *
+ * RETURN:      ACPI_STATUS
+ *
+ * DESCRIPTION: Adds a dependency to the AslGbl_DependencyGraph. If the Devices
+ *              already exist in the graph then new nodes are created.
+ *
+ ******************************************************************************/
+
+static ACPI_STATUS
+AddDependency (
+    char                     *SourceName,
+    char                     *DestinationName)
+{
+    struct device            *Source;
+    struct device            *Destination;
+    struct dependency        *Dependency;
+
+    if (!(Source = FindDeviceInDependencyGraph (SourceName)))
+    {
+        /* Device node not in graph - allocate a new one */
+
+        if (!(Source = (struct device*) malloc (sizeof (struct device))))
+        {
+            return (AE_NO_MEMORY);
+        }
+
+        Source->Name = SourceName;
+        Source->Dependencies = NULL;
+
+        /* Not visited and not currently being visited */
+
+        Source->PermanentMark = FALSE;
+        Source->TemporaryMark = FALSE;
+
+        /* Add to the front of the list */
+
+        Source->Next = AslGbl_DependencyGraph;
+        AslGbl_DependencyGraph = Source;
+    }
+
+    if (!(Destination = FindDeviceInDependencyGraph (DestinationName)))
+    {
+        /* Device node not in graph - allocate a new one */
+
+        if (!(Destination = (struct device*) malloc (sizeof (struct device))))
+        {
+            return (AE_NO_MEMORY);
+        }
+
+        Destination->Name = DestinationName;
+        Destination->Dependencies = NULL;
+
+        /* Not visited and not currently being visited */
+
+        Destination->PermanentMark = FALSE;
+        Destination->TemporaryMark = FALSE;
+
+        /* Add to the front of the list */
+
+        Destination->Next = AslGbl_DependencyGraph;
+        AslGbl_DependencyGraph = Destination;
+    }
+
+    /* allocate new dependency struct and add it to the front of Source's Dependencies list */
+
+    if (!(Dependency = (struct dependency*) malloc (sizeof (struct dependency))))
+    {
+        return (AE_NO_MEMORY);
+    }
+
+    Dependency->Source = Source;
+    Dependency->Destination = Destination;
+    Dependency->NextDependency = Source->Dependencies;
+
+    Source->Dependencies = Dependency;
+
+    return (AE_OK);
 }
